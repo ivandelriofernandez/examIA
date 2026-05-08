@@ -223,29 +223,22 @@
 
     const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-    async function withRetry(fn, onWait, maxRetries = 4) {
-      const delays = [15, 30, 45, 60]; // seconds to wait on each retry
-      for (let attempt = 0; attempt <= maxRetries; attempt++) {
-        try {
-          return await fn();
-        } catch (err) {
-          const isRateLimit = err.message && (
-            err.message.includes("rate limit") ||
-            err.message.includes("rate_limit") ||
-            err.message.includes("529") ||
-            err.message.includes("429")
-          );
-          if (isRateLimit && attempt < maxRetries) {
-            const wait = delays[attempt] || 60;
-            for (let s = wait; s > 0; s--) {
-              onWait(`Límite de velocidad alcanzado. Reintentando en ${s}s… (intento ${attempt + 1}/${maxRetries})`);
-              await sleep(1000);
-            }
-            onWait("Reintentando…");
-          } else {
-            throw err;
-          }
+    async function withRetry(fn, onWait) {
+      try {
+        return await fn();
+      } catch (err) {
+        const msg = (err && err.message) ? err.message : "";
+        const isRateLimit = msg.includes("rate limit") || msg.includes("rate_limit") ||
+          msg.includes("Request too large") || msg.includes("Too Many Requests") ||
+          /\b429\b/.test(msg) || /\b529\b/.test(msg);
+        if (!isRateLimit) throw err;
+        // Wait 65 seconds then try once more
+        for (let s = 65; s > 0; s--) {
+          onWait("Límite alcanzado. Reintentando en " + s + "s…");
+          await sleep(1000);
         }
+        onWait("Reintentando…");
+        return await fn(); // one final attempt, throw if fails
       }
     }
     const LETTERS = ["A", "B", "C", "D"];
@@ -346,6 +339,15 @@
 
     // Generate questions from already-extracted text (much cheaper)
     async function generateFromText(textContent, numQ, apiKey) {
+      // Truncate to ~12000 chars to stay within token limits
+      const safeText = textContent.length > 12000 ? textContent.slice(0, 12000) + "..." : textContent;
+      const prompt = "Basandote en el siguiente temario, genera exactamente " + numQ + " preguntas de examen tipo test en espanol. " +
+        "Devuelve UNICAMENTE un array JSON valido, sin markdown ni texto extra. Cada elemento debe tener: " +
+        '"question": string (pregunta completa), ' +
+        '"options": array de exactamente 4 strings (sin letra de prefijo), ' +
+        '"correct": number (indice 0-3 de la respuesta correcta), ' +
+        '"explanation": string (explicacion breve). ' +
+        "Varia los temas y la dificultad. Opciones incorrectas plausibles.\n\nTEMARIO:\n" + safeText;
       const res = await fetch(API_URL, {
         method: "POST",
         headers: {
@@ -357,22 +359,13 @@
         body: JSON.stringify({
           model: "claude-sonnet-4-6",
           max_tokens: 4096,
-          messages: [{
-            role: "user",
-            content: `Basándote en el siguiente temario, genera exactamente ${numQ} preguntas de examen tipo test en español.
-Devuelve ÚNICAMENTE un array JSON válido, sin markdown ni texto extra. Cada elemento debe tener:
-- "question": string (la pregunta clara y completa)
-- "options": array de exactamente 4 strings (sin letra de prefijo)
-- "correct": number (índice 0-3 de la respuesta correcta)
-- "explanation": string (explicación breve en 1-2 frases)
-Varía los temas y la dificultad. Las opciones incorrectas deben ser plausibles.
-
-TEMARIO:
-${textContent}`
-          }]
+          messages: [{ role: "user", content: prompt }]
         })
       });
-      if (!res.ok) { const e = await res.json().catch(()=>({})); throw new Error(e?.error?.message || `Error ${res.status}`); }
+      if (!res.ok) {
+        const e = await res.json().catch(() => ({}));
+        throw new Error(e?.error?.message || ("Error " + res.status));
+      }
       const data = await res.json();
       const raw = data.content.find(b => b.type === "text")?.text || "[]";
       const clean = raw.replace(/^```json\s*|^```\s*|```\s*$/gm, "").trim();
