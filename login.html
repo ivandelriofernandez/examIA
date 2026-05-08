@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>examIA – Acceso</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+  <link href="https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,700;1,500&family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet"/>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg: #0b0f1a; --surface: #131829; --surface2: #1a2035;
+      --border: rgba(255,255,255,0.08); --text: #edf0f7; --muted: #7a8099;
+      --gold: #e8b84b; --gold-dim: rgba(232,184,75,0.12); --gold-glow: rgba(232,184,75,0.25);
+      --red: #f87171; --red-dim: rgba(248,113,113,0.1);
+      --font-head: 'Lora', serif; --font-body: 'DM Sans', sans-serif;
+    }
+    html, body { height: 100%; }
+    body { background: var(--bg); color: var(--text); font-family: var(--font-body); display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 24px; -webkit-font-smoothing: antialiased; }
+    .orb { position: fixed; border-radius: 50%; pointer-events: none; }
+    .orb-1 { width: 500px; height: 500px; top: -200px; left: -150px; background: radial-gradient(circle, rgba(232,184,75,0.07) 0%, transparent 70%); }
+    .orb-2 { width: 400px; height: 400px; bottom: -150px; right: -100px; background: radial-gradient(circle, rgba(96,165,250,0.05) 0%, transparent 70%); }
+    .card { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 44px 40px; width: 100%; max-width: 400px; position: relative; z-index: 1; }
+    .logo { display: flex; align-items: center; gap: 8px; margin-bottom: 32px; }
+    .logo-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--gold); }
+    .logo-text { font-family: var(--font-head); font-size: 22px; font-weight: 700; color: var(--gold); }
+    h1 { font-family: var(--font-head); font-size: 26px; font-weight: 700; margin-bottom: 6px; }
+    .sub { font-size: 14px; color: var(--muted); margin-bottom: 32px; }
+    label { display: block; font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; }
+    .field { margin-bottom: 18px; }
+    input { width: 100%; padding: 13px 16px; background: var(--surface2); border: 1.5px solid var(--border); border-radius: 8px; color: var(--text); font-family: var(--font-body); font-size: 15px; outline: none; transition: border-color 0.2s; }
+    input:focus { border-color: var(--gold); }
+    input::placeholder { color: var(--muted); }
+    .btn { width: 100%; padding: 14px; background: var(--gold); color: #0b0f1a; border: none; border-radius: 10px; font-family: var(--font-body); font-size: 15px; font-weight: 700; cursor: pointer; margin-top: 8px; transition: all 0.2s; display: flex; align-items: center; justify-content: center; gap: 8px; }
+    .btn:hover:not(:disabled) { background: #f0c75c; box-shadow: 0 4px 20px var(--gold-glow); transform: translateY(-1px); }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+    .error { display: none; align-items: center; gap: 8px; padding: 12px 16px; background: var(--red-dim); border: 1px solid rgba(248,113,113,0.25); border-radius: 8px; font-size: 13px; color: var(--red); margin-bottom: 18px; }
+    .error.visible { display: flex; }
+    .spinner { width: 18px; height: 18px; border: 2px solid rgba(11,15,26,0.3); border-top-color: #0b0f1a; border-radius: 50%; animation: spin 0.7s linear infinite; flex-shrink: 0; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <div class="orb orb-1"></div>
+  <div class="orb orb-2"></div>
+  <div class="card">
+    <div class="logo"><span class="logo-dot"></span><span class="logo-text">examIA</span></div>
+    <h1>Acceso privado</h1>
+    <p class="sub">Introduce tus credenciales para continuar</p>
+    <div class="error" id="err">⚠️ <span id="err-msg">Usuario o contraseña incorrectos.</span></div>
+    <div class="field">
+      <label for="u">Usuario</label>
+      <input id="u" type="text" placeholder="tu-usuario" autocomplete="username" autofocus />
+    </div>
+    <div class="field">
+      <label for="p">Contraseña</label>
+      <input id="p" type="password" placeholder="••••••••••••" autocomplete="current-password" />
+    </div>
+    <button class="btn" id="btn" onclick="doLogin()">
+      <span id="btn-text">Entrar</span>
+    </button>
+  </div>
+
+  <script>
+    const params = new URLSearchParams(location.search);
+    if (params.get("error")) {
+      document.getElementById("err").classList.add("visible");
+    }
+
+    document.getElementById("p").addEventListener("keydown", e => {
+      if (e.key === "Enter") doLogin();
+    });
+
+    async function doLogin() {
+      const u = document.getElementById("u").value.trim();
+      const p = document.getElementById("p").value;
+      const btn = document.getElementById("btn");
+      const btnText = document.getElementById("btn-text");
+      const errBox = document.getElementById("err");
+      const errMsg = document.getElementById("err-msg");
+
+      if (!u || !p) {
+        errMsg.textContent = "Completa todos los campos.";
+        errBox.classList.add("visible");
+        return;
+      }
+
+      btn.disabled = true;
+      btnText.innerHTML = '<div class="spinner"></div> Verificando…';
+      errBox.classList.remove("visible");
+
+      try {
+        const res = await fetch("/api/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ username: u, password: p })
+        });
+
+        if (res.ok) {
+          window.location.href = "/";
+        } else {
+          const data = await res.json().catch(() => ({}));
+          errMsg.textContent = data.error || "Usuario o contraseña incorrectos.";
+          errBox.classList.add("visible");
+          btn.disabled = false;
+          btnText.textContent = "Entrar";
+        }
+      } catch {
+        errMsg.textContent = "Error de red. Inténtalo de nuevo.";
+        errBox.classList.add("visible");
+        btn.disabled = false;
+        btnText.textContent = "Entrar";
+      }
+    }
+  </script>
+</body>
+</html>
