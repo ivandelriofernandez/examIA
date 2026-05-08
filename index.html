@@ -200,18 +200,6 @@
       .sticky-bar { flex-direction: column; align-items: stretch; text-align: center; }
     }
   </style>
-
-  <script>
-    // Auth guard - runs before React mounts
-    (async function() {
-      try {
-        const res = await fetch("/api/auth");
-        if (!res.ok) window.location.replace("/login.html");
-      } catch {
-        window.location.replace("/login.html");
-      }
-    })();
-  </script>
 </head>
 <body>
   <div id="root"></div>
@@ -418,12 +406,51 @@ Varía los temas y la dificultad. Las opciones incorrectas deben ser plausibles.
 
     function ApiKeyModal({ onSave }) {
       const [key, setKey] = useState("");
+      const [step, setStep] = useState(0); // 0=intro, 1=enter key
+      if (step === 0) return (
+        <div className="modal-overlay">
+          <div className="modal" style={{maxWidth:520}}>
+            <div style={{fontSize:32,marginBottom:16}}>👋</div>
+            <div className="modal-title">Bienvenido a examIA</div>
+            <div className="modal-sub">
+              Esta app usa la IA de Anthropic (Claude) para generar preguntas de examen desde tu PDF.
+              Para funcionar necesita una clave de API que tú mismo obtienes gratis.
+            </div>
+            <div style={{display:"grid",gap:10,marginBottom:24}}>
+              {[
+                ["🔒","Tu clave se guarda solo en tu navegador. Nosotros nunca la vemos."],
+                ["💸","Coste estimado: 1–3 céntimos por examen. Pagas directamente a Anthropic, no a nosotros."],
+                ["⚡","Anthropic da créditos gratuitos al registrarte para empezar a probar."],
+              ].map(([icon,txt],i) => (
+                <div key={i} style={{display:"flex",gap:12,padding:"12px 14px",background:"var(--surface2)",borderRadius:8,fontSize:13,color:"var(--muted)",lineHeight:1.5}}>
+                  <span style={{fontSize:18,flexShrink:0}}>{icon}</span><span>{txt}</span>
+                </div>
+              ))}
+            </div>
+            <button className="btn btn-gold btn-lg" style={{width:"100%"}} onClick={() => setStep(1)}>
+              Entendido, continuar →
+            </button>
+          </div>
+        </div>
+      );
       return (
         <div className="modal-overlay">
-          <div className="modal">
-            <div className="modal-title">🔑 Clave de API de Anthropic</div>
+          <div className="modal" style={{maxWidth:520}}>
+            <div className="modal-title">🔑 Introduce tu clave de API</div>
             <div className="modal-sub">
-              examIA usa la API de Claude para generar preguntas desde tu PDF. Introduce tu clave de API para continuar. Se guardará en tu navegador.
+              Sigue estos pasos:
+            </div>
+            <div style={{display:"grid",gap:8,marginBottom:20}}>
+              {[
+                [1,"Ve a","console.anthropic.com/settings/keys","console.anthropic.com"],
+                [2,"Crea una cuenta gratuita si no tienes","",""],
+                [3,"Pulsa "Create Key" y copia la clave","",""],
+              ].map(([n,txt,url,label],i) => (
+                <div key={i} style={{display:"flex",alignItems:"center",gap:10,fontSize:13,color:"var(--muted)"}}>
+                  <span style={{width:22,height:22,borderRadius:"50%",background:"var(--gold-dim)",border:"1px solid rgba(232,184,75,0.3)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:700,color:"var(--gold)",flexShrink:0}}>{n}</span>
+                  <span>{txt} {url && <a href={"https://"+url} target="_blank" rel="noreferrer" style={{color:"var(--gold)",textDecoration:"none"}}>{label}</a>}</span>
+                </div>
+              ))}
             </div>
             <input
               className="modal-input"
@@ -434,21 +461,15 @@ Varía los temas y la dificultad. Las opciones incorrectas deben ser plausibles.
               onKeyDown={e => e.key === "Enter" && key.startsWith("sk-") && onSave(key)}
               autoFocus
             />
-            <div className="modal-hint">
-              Obtén tu clave en{" "}
-              <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noreferrer">
-                console.anthropic.com
-              </a>
-              . Tu clave nunca sale de tu navegador.
+            <div style={{fontSize:12,color:"var(--hint)",marginBottom:20,display:"flex",alignItems:"center",gap:6}}>
+              🔒 Se guarda solo en tu navegador. Puedes cambiarla cuando quieras con el botón 🔑 del menú.
             </div>
-            <button
-              className="btn btn-gold btn-lg"
-              style={{ width: "100%" }}
-              onClick={() => onSave(key)}
-              disabled={!key.startsWith("sk-")}
-            >
-              Guardar y continuar →
-            </button>
+            <div style={{display:"flex",gap:10}}>
+              <button className="btn btn-ghost" onClick={() => setStep(0)}>← Volver</button>
+              <button className="btn btn-gold btn-lg" style={{flex:1}} onClick={() => onSave(key)} disabled={!key.startsWith("sk-")}>
+                Guardar y continuar →
+              </button>
+            </div>
           </div>
         </div>
       );
@@ -466,7 +487,6 @@ Varía los temas y la dificultad. Las opciones incorrectas deben ser plausibles.
               📋 Fallos {fallos.length > 0 && <span className="badge">{fallos.length}</span>}
             </button>
             <button className="nav-pill" onClick={onApiKey} title="Cambiar API key">🔑</button>
-            <button className="nav-pill" onClick={() => window.examiaLogout && window.examiaLogout()} title="Cerrar sesión">🚪</button>
           </div>
         </div>
       );
@@ -807,9 +827,9 @@ Varía los temas y la dificultad. Las opciones incorrectas deben ser plausibles.
           {showApiModal && <ApiKeyModal onSave={handleSaveApiKey} />}
           <Header fallos={fallos} onHome={() => setView("home")} onFallos={() => setView("fallos")} onApiKey={() => setShowApiModal(true)} />
           <div className="main">
-            <div className="hero-label">Examinador con IA</div>
+            <div className="hero-label">Examinador con IA · Gratis</div>
             <div className="hero-title">Convierte tu temario<br />en un <em>examen tipo test</em></div>
-            <div className="hero-sub">Sube el PDF de tus apuntes y la IA generará preguntas aleatorias, corregirá tus respuestas y guardará tus errores para repasar.</div>
+            <div className="hero-sub">Sube el PDF de tus apuntes, elige cuántas preguntas y la IA te examina al instante. Corrige tus respuestas y repasa los errores hasta dominarlos.</div>
             {error && <div className="error-box" style={{marginBottom:20}}>{error}</div>}
 
             {savedPdfs.length > 0 && (
@@ -873,14 +893,6 @@ Varía los temas y la dificultad. Las opciones incorrectas deben ser plausibles.
 
     const root = ReactDOM.createRoot(document.getElementById("root"));
     root.render(<App />);
-  </script>
-
-  <script>
-    // Expose logout globally so the app can call it
-    window.examiaLogout = async function() {
-      await fetch("/api/logout");
-      window.location.replace("/login.html");
-    };
   </script>
 </body>
 </html>
