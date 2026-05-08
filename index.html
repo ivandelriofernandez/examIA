@@ -220,6 +220,34 @@
     const { useState, useEffect, useRef, useCallback } = React;
 
     const API_URL = "https://api.anthropic.com/v1/messages";
+
+    const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+    async function withRetry(fn, onWait, maxRetries = 4) {
+      const delays = [15, 30, 45, 60]; // seconds to wait on each retry
+      for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        try {
+          return await fn();
+        } catch (err) {
+          const isRateLimit = err.message && (
+            err.message.includes("rate limit") ||
+            err.message.includes("rate_limit") ||
+            err.message.includes("529") ||
+            err.message.includes("429")
+          );
+          if (isRateLimit && attempt < maxRetries) {
+            const wait = delays[attempt] || 60;
+            for (let s = wait; s > 0; s--) {
+              onWait(`Límite de velocidad alcanzado. Reintentando en ${s}s… (intento ${attempt + 1}/${maxRetries})`);
+              await sleep(1000);
+            }
+            onWait("Reintentando…");
+          } else {
+            throw err;
+          }
+        }
+      }
+    }
     const LETTERS = ["A", "B", "C", "D"];
     const STORAGE_KEY = "examia_fallos";
     
@@ -261,6 +289,20 @@
         req.onerror = () => reject(req.error);
       });
     }
+    async function idbUpdatePdf(id, updates) {
+      const db = await openDB();
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction("pdfs", "readwrite");
+        const store = tx.objectStore("pdfs");
+        const getReq = store.get(id);
+        getReq.onsuccess = () => {
+          const putReq = store.put({ ...getReq.result, ...updates });
+          putReq.onsuccess = () => resolve();
+          putReq.onerror = () => reject(putReq.error);
+        };
+        getReq.onerror = () => reject(getReq.error);
+      });
+    }
 
     function loadFallos() {
       try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]"); } catch { return []; }
@@ -273,6 +315,70 @@
     }
     function saveApiKey(key) {
       try { localStorage.setItem(APIKEY_STORAGE, key); } catch {}
+    }
+
+    // Extract text once → reuse for all future exams (saves tokens)
+    async function extractTextFromPdf(pdfBase64, apiKey) {
+      const res = await fetch(API_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": apiKey,
+          "anthropic-version": "2023-06-01",
+          "anthropic-dangerous-direct-browser-access": "true"
+        },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-6",
+          max_tokens: 8000,
+          messages: [{
+            role: "user",
+            content: [
+              { type: "document", source: { type: "base64", media_type: "application/pdf", data: pdfBase64 } },
+              { type: "text", text: "Extrae todo el contenido textual de este documento PDF manteniendo la estructura (títulos, secciones, párrafos, listas). Devuelve únicamente el texto extraído, sin comentarios ni explicaciones." }
+            ]
+          }]
+        })
+      });
+      if (!res.ok) { const e = await res.json().catch(()=>({})); throw new Error(e?.error?.message || `Error ${res.status}`); }
+      const data = await res.json();
+      return data.content.find(b => b.type === "text")?.text || "";
+    }
+
+    // Generate questions from already-extracted text (much cheaper)
+    async function generateFromText(textContent, numQ, apiKey) {
+      const res = await fetch(API_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": apiKey,
+          "anthropic-version": "2023-06-01",
+          "anthropic-dangerous-direct-browser-access": "true"
+        },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-6",
+          max_tokens: 4096,
+          messages: [{
+            role: "user",
+            content: `Basándote en el siguiente temario, genera exactamente ${numQ} preguntas de examen tipo test en español.
+Devuelve ÚNICAMENTE un array JSON válido, sin markdown ni texto extra. Cada elemento debe tener:
+- "question": string (la pregunta clara y completa)
+- "options": array de exactamente 4 strings (sin letra de prefijo)
+- "correct": number (índice 0-3 de la respuesta correcta)
+- "explanation": string (explicación breve en 1-2 frases)
+Varía los temas y la dificultad. Las opciones incorrectas deben ser plausibles.
+
+TEMARIO:
+${textContent}`
+          }]
+        })
+      });
+      if (!res.ok) { const e = await res.json().catch(()=>({})); throw new Error(e?.error?.message || `Error ${res.status}`); }
+      const data = await res.json();
+      const raw = data.content.find(b => b.type === "text")?.text || "[]";
+      const clean = raw.replace(/^```json\s*|^```\s*|```\s*$/gm, "").trim();
+      const parsed = JSON.parse(clean);
+      if (!Array.isArray(parsed) || !parsed.length) throw new Error("Respuesta inesperada");
+      return parsed;
     }
 
     async function generateFromPdf(pdfBase64, numQ, apiKey) {
@@ -389,6 +495,8 @@ Varía los temas y la dificultad. Las opciones incorrectas deben ser plausibles.
       const [isReview, setIsReview] = useState(false);
       const [dragOver, setDragOver] = useState(false);
       const [loading, setLoading] = useState(false);
+      const [extracting, setExtracting] = useState(false);
+      const [retryMsg, setRetryMsg] = useState("");
       const [error, setError] = useState(null);
       const fileRef = useRef();
 
@@ -415,18 +523,48 @@ Varía los temas y la dificultad. Las opciones incorrectas deben ser plausibles.
           const b64 = e.target.result.split(",")[1];
           const newPdf = { name: file.name, size: (file.size / 1024 / 1024).toFixed(2) + " MB", base64: b64 };
           setPdf(newPdf);
-          idbSavePdf(newPdf).then(id => {
-            setSavedPdfs(prev => [...prev, { ...newPdf, id }]);
-          }).catch(() => {});
-          requireApiKey(() => setView("config"));
+          requireApiKey(() => startExtraction(newPdf, null));
         };
         reader.readAsDataURL(file);
       }, [apiKey]);
 
-      const startExam = useCallback(async () => {
-        setLoading(true); setError(null);
+      const startExtraction = useCallback(async (pdfData, existingId) => {
+        setExtracting(true);
+        setError(null);
         try {
-          const qs = await generateFromPdf(pdf.base64, numQ, apiKey);
+          const key = apiKey || loadApiKey();
+          const text = await withRetry(
+            () => extractTextFromPdf(pdfData.base64, key),
+            msg => setRetryMsg(msg)
+          );
+          const enriched = { ...pdfData, textContent: text };
+          setPdf(enriched);
+          if (existingId) {
+            await idbUpdatePdf(existingId, { textContent: text });
+            setSavedPdfs(prev => prev.map(p => p.id === existingId ? { ...p, textContent: text } : p));
+          } else {
+            const id = await idbSavePdf(enriched);
+            setSavedPdfs(prev => [...prev, { ...enriched, id }]);
+          }
+          setView("config");
+        } catch(err) {
+          setError("Error al procesar el PDF: " + err.message);
+          setView("home");
+        }
+        setExtracting(false);
+      }, [apiKey]);
+
+      const startExam = useCallback(async () => {
+        setLoading(true); setError(null); setRetryMsg("");
+        try {
+          const key = apiKey || loadApiKey();
+          const qs = await withRetry(
+            () => pdf.textContent
+              ? generateFromText(pdf.textContent, numQ, key)
+              : generateFromPdf(pdf.base64, numQ, key),
+            msg => setRetryMsg(msg)
+          );
+          setRetryMsg("");
           setQuestions(qs); setAnswers({}); setSubmitted(false); setIsReview(false);
           setView("exam");
         } catch (e) { setError("Error al generar preguntas: " + e.message); }
@@ -469,6 +607,24 @@ Varía los temas y la dificultad. Las opciones incorrectas deben ser plausibles.
       const wrongCount = questions.length - correctCount;
       const scoreMsg = pct >= 90 ? "🏆 ¡Resultado excelente!" : pct >= 70 ? "👍 Buen trabajo" : pct >= 50 ? "📖 Sigue estudiando" : "💪 ¡A repasar más!";
 
+      if (extracting) return (
+        <div className="examia-app">
+          <div className="glow-orb glow-orb-1" /><div className="glow-orb glow-orb-2" />
+          <Header fallos={fallos} onHome={() => setView("home")} onFallos={() => setView("fallos")} onApiKey={() => setShowApiModal(true)} />
+          <div className="main"><div className="loading-view">
+            <div className="spinner" />
+            <div>
+              <div className="loading-title">Procesando PDF…</div>
+              <div className="loading-sub">{retryMsg || "Extrayendo el texto del temario — solo ocurre una vez"}</div>
+              <div className="loading-dots"><div className="loading-dot"/><div className="loading-dot"/><div className="loading-dot"/></div>
+              <div style={{marginTop:20,fontSize:12,color:"var(--hint)",maxWidth:320,lineHeight:1.6}}>
+                A partir de ahora podrás generar exámenes de este PDF sin volver a procesarlo 💡
+              </div>
+            </div>
+          </div></div>
+        </div>
+      );
+
       if (loading) return (
         <div className="examia-app">
           <div className="glow-orb glow-orb-1" /><div className="glow-orb glow-orb-2" />
@@ -477,7 +633,7 @@ Varía los temas y la dificultad. Las opciones incorrectas deben ser plausibles.
             <div className="spinner" />
             <div>
               <div className="loading-title">Generando preguntas…</div>
-              <div className="loading-sub">Analizando el temario del PDF</div>
+              <div className="loading-sub">{retryMsg || "Creando el examen a partir del temario"}</div>
               <div className="loading-dots"><div className="loading-dot"/><div className="loading-dot"/><div className="loading-dot"/></div>
             </div>
           </div></div>
@@ -638,8 +794,13 @@ Varía los temas y la dificultad. Las opciones incorrectas deben ser plausibles.
       );
 
       const useSavedPdf = (saved) => {
-        setPdf({ name: saved.name, size: saved.size, base64: saved.base64 });
-        requireApiKey(() => setView("config"));
+        if (saved.textContent) {
+          setPdf(saved);
+          requireApiKey(() => setView("config"));
+        } else {
+          setPdf(saved);
+          requireApiKey(() => startExtraction(saved, saved.id));
+        }
       };
       const deleteSavedPdf = async (id, e) => {
         e.stopPropagation();
@@ -670,7 +831,12 @@ Varía los temas y la dificultad. Las opciones incorrectas deben ser plausibles.
                     >
                       <div style={{fontSize:24,marginBottom:8}}>📄</div>
                       <div style={{fontSize:13,fontWeight:600,color:"var(--text)",marginBottom:4,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",paddingRight:24}}>{p.name}</div>
-                      <div style={{fontSize:12,color:"var(--muted)"}}>{p.size} · {new Date(p.savedAt).toLocaleDateString("es-ES",{day:"2-digit",month:"short"})}</div>
+                      <div style={{display:"flex",alignItems:"center",gap:8,fontSize:12,color:"var(--muted)"}}>
+                        {p.size} · {new Date(p.savedAt).toLocaleDateString("es-ES",{day:"2-digit",month:"short"})}
+                        {p.textContent
+                          ? <span style={{color:"var(--green)",fontWeight:600}}>✓ listo</span>
+                          : <span style={{color:"var(--gold)"}}>⏳ pendiente</span>}
+                      </div>
                       <button onClick={e => deleteSavedPdf(p.id, e)} title="Eliminar"
                         style={{position:"absolute",top:10,right:10,background:"transparent",border:"none",cursor:"pointer",fontSize:14,color:"var(--hint)",padding:"2px 6px",borderRadius:4,transition:"color 0.2s"}}
                         onMouseEnter={e => e.currentTarget.style.color="var(--red)"}
