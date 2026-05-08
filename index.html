@@ -222,7 +222,45 @@
     const API_URL = "https://api.anthropic.com/v1/messages";
     const LETTERS = ["A", "B", "C", "D"];
     const STORAGE_KEY = "examia_fallos";
+    
     const APIKEY_STORAGE = "examia_apikey";
+
+    // ── IndexedDB helpers ──────────────────────────────────
+    function openDB() {
+      return new Promise((resolve, reject) => {
+        const req = indexedDB.open("examia_db", 1);
+        req.onupgradeneeded = e => {
+          e.target.result.createObjectStore("pdfs", { keyPath: "id", autoIncrement: true });
+        };
+        req.onsuccess = e => resolve(e.target.result);
+        req.onerror = () => reject(req.error);
+      });
+    }
+    async function idbSavePdf(pdf) {
+      const db = await openDB();
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction("pdfs", "readwrite");
+        const req = tx.objectStore("pdfs").add({ name: pdf.name, size: pdf.size, base64: pdf.base64, savedAt: Date.now() });
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+      });
+    }
+    async function idbLoadPdfs() {
+      const db = await openDB();
+      return new Promise((resolve, reject) => {
+        const req = db.transaction("pdfs", "readonly").objectStore("pdfs").getAll();
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+      });
+    }
+    async function idbDeletePdf(id) {
+      const db = await openDB();
+      return new Promise((resolve, reject) => {
+        const req = db.transaction("pdfs", "readwrite").objectStore("pdfs").delete(id);
+        req.onsuccess = () => resolve();
+        req.onerror = () => reject(req.error);
+      });
+    }
 
     function loadFallos() {
       try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]"); } catch { return []; }
@@ -339,6 +377,7 @@ Varía los temas y la dificultad. Las opciones incorrectas deben ser plausibles.
       const [view, setView] = useState("home");
       const [apiKey, setApiKey] = useState(() => loadApiKey());
       const [showApiModal, setShowApiModal] = useState(false);
+      useEffect(() => { idbLoadPdfs().then(setSavedPdfs).catch(() => {}); }, []);
       const [pendingAction, setPendingAction] = useState(null);
       const [pdf, setPdf] = useState(null);
       const [numQ, setNumQ] = useState(10);
@@ -346,6 +385,7 @@ Varía los temas y la dificultad. Las opciones incorrectas deben ser plausibles.
       const [answers, setAnswers] = useState({});
       const [submitted, setSubmitted] = useState(false);
       const [fallos, setFallos] = useState(() => loadFallos());
+      const [savedPdfs, setSavedPdfs] = useState([]);
       const [isReview, setIsReview] = useState(false);
       const [dragOver, setDragOver] = useState(false);
       const [loading, setLoading] = useState(false);
@@ -373,7 +413,11 @@ Varía los temas y la dificultad. Las opciones incorrectas deben ser plausibles.
         const reader = new FileReader();
         reader.onload = (e) => {
           const b64 = e.target.result.split(",")[1];
-          setPdf({ name: file.name, size: (file.size / 1024 / 1024).toFixed(2) + " MB", base64: b64 });
+          const newPdf = { name: file.name, size: (file.size / 1024 / 1024).toFixed(2) + " MB", base64: b64 };
+          setPdf(newPdf);
+          idbSavePdf(newPdf).then(id => {
+            setSavedPdfs(prev => [...prev, { ...newPdf, id }]);
+          }).catch(() => {});
           requireApiKey(() => setView("config"));
         };
         reader.readAsDataURL(file);
@@ -593,6 +637,16 @@ Varía los temas y la dificultad. Las opciones incorrectas deben ser plausibles.
         </div>
       );
 
+      const useSavedPdf = (saved) => {
+        setPdf({ name: saved.name, size: saved.size, base64: saved.base64 });
+        requireApiKey(() => setView("config"));
+      };
+      const deleteSavedPdf = async (id, e) => {
+        e.stopPropagation();
+        await idbDeletePdf(id).catch(() => {});
+        setSavedPdfs(prev => prev.filter(p => p.id !== id));
+      };
+
       return (
         <div className="examia-app">
           <div className="glow-orb glow-orb-1" /><div className="glow-orb glow-orb-2" />
@@ -603,6 +657,32 @@ Varía los temas y la dificultad. Las opciones incorrectas deben ser plausibles.
             <div className="hero-title">Convierte tu temario<br />en un <em>examen tipo test</em></div>
             <div className="hero-sub">Sube el PDF de tus apuntes y la IA generará preguntas aleatorias, corregirá tus respuestas y guardará tus errores para repasar.</div>
             {error && <div className="error-box" style={{marginBottom:20}}>{error}</div>}
+
+            {savedPdfs.length > 0 && (
+              <div style={{marginBottom:28}}>
+                <div style={{fontSize:12,fontWeight:600,color:"var(--muted)",textTransform:"uppercase",letterSpacing:1,marginBottom:12}}>PDFs guardados</div>
+                <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(220px,1fr))",gap:10}}>
+                  {savedPdfs.map(p => (
+                    <div key={p.id} onClick={() => useSavedPdf(p)}
+                      style={{background:"var(--surface)",border:"1.5px solid var(--border)",borderRadius:"var(--r)",padding:"16px",cursor:"pointer",transition:"all 0.18s",position:"relative"}}
+                      onMouseEnter={e => { e.currentTarget.style.borderColor="var(--gold)"; e.currentTarget.style.background="var(--gold-dim)"; }}
+                      onMouseLeave={e => { e.currentTarget.style.borderColor="var(--border)"; e.currentTarget.style.background="var(--surface)"; }}
+                    >
+                      <div style={{fontSize:24,marginBottom:8}}>📄</div>
+                      <div style={{fontSize:13,fontWeight:600,color:"var(--text)",marginBottom:4,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",paddingRight:24}}>{p.name}</div>
+                      <div style={{fontSize:12,color:"var(--muted)"}}>{p.size} · {new Date(p.savedAt).toLocaleDateString("es-ES",{day:"2-digit",month:"short"})}</div>
+                      <button onClick={e => deleteSavedPdf(p.id, e)} title="Eliminar"
+                        style={{position:"absolute",top:10,right:10,background:"transparent",border:"none",cursor:"pointer",fontSize:14,color:"var(--hint)",padding:"2px 6px",borderRadius:4,transition:"color 0.2s"}}
+                        onMouseEnter={e => e.currentTarget.style.color="var(--red)"}
+                        onMouseLeave={e => e.currentTarget.style.color="var(--hint)"}
+                      >✕</button>
+                    </div>
+                  ))}
+                </div>
+                <div className="divider">o sube uno nuevo</div>
+              </div>
+            )}
+
             <div
               className={`upload-zone ${dragOver?"dragover":""}`}
               onClick={() => fileRef.current.click()}
