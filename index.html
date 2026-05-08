@@ -496,7 +496,6 @@ Varía los temas y la dificultad. Las opciones incorrectas deben ser plausibles.
       const [view, setView] = useState("home");
       const [apiKey, setApiKey] = useState(() => loadApiKey());
       const [showApiModal, setShowApiModal] = useState(false);
-      useEffect(() => { idbLoadPdfs().then(setSavedPdfs).catch(() => {}); }, []);
       const [pendingAction, setPendingAction] = useState(null);
       const [pdf, setPdf] = useState(null);
       const [numQ, setNumQ] = useState(10);
@@ -512,6 +511,8 @@ Varía los temas y la dificultad. Las opciones incorrectas deben ser plausibles.
       const [retryMsg, setRetryMsg] = useState("");
       const [error, setError] = useState(null);
       const fileRef = useRef();
+
+      useEffect(() => { idbLoadPdfs().then(setSavedPdfs).catch(() => {}); }, []);
 
       const handleSaveApiKey = (key) => {
         saveApiKey(key);
